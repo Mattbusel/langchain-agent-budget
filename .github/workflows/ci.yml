@@ -1,0 +1,41 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '41 6 * * 1'  # weekly: new langchain, deepagents and llm-prices releases
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, python: '3.10' }
+          - { os: ubuntu-latest, python: '3.12' }
+          - { os: ubuntu-latest, python: '3.13' }
+          - { os: windows-latest, python: '3.12' }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install -e . pytest pytest-asyncio deepagents langchain-anthropic
+      - run: python -m pytest -q
+      - name: the no-key example runs
+        run: python examples/offline_demo.py
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -e . ruff==0.17.5 mypy
+      - run: ruff format --check .
+      - run: ruff check .
+      - run: mypy langchain_agent_budget
