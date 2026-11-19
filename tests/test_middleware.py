@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import pytest
-from agent_budget import Budget, BudgetExhausted
+from agent_budget import Budget, BudgetExhausted, StalePrice, UnsafeBudgetWarning
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import tool
@@ -155,12 +155,36 @@ def test_unpriced_model_policy() -> None:
         respond=lambda m: reply(served_model="my-finetune"), model_name="my-finetune"
     )
     budget = Budget(1.00)
+    # The default refuses: no call is made, the run ends with the reason.
     agent = create_agent(model, middleware=[SpendBudgetMiddleware(budget)])
-    with pytest.warns(UserWarning, match="no llm-prices price"):
-        run(agent)
-    assert budget.spent_usd == 0
+    result = run(agent)
+    assert "refusing to guess" in result[-1].content
+    assert model.calls == 0
     strict = create_agent(model, middleware=[SpendBudgetMiddleware(budget, unpriced="error")])
     with pytest.raises(UnpricedModelError):
+        run(strict)
+    # The unsafe opt-out warns on every call it lets through.
+    loose = create_agent(model, middleware=[SpendBudgetMiddleware(budget, unpriced="warn")])
+    with pytest.warns(UnsafeBudgetWarning, match="not counted"):
+        run(loose)
+    with pytest.warns(UnsafeBudgetWarning, match="not counted"):
+        run(loose)
+    assert budget.spent_usd == 0
+    with pytest.raises(ValueError, match="ignore"):
+        SpendBudgetMiddleware(budget, unpriced="ignore")  # type: ignore[arg-type]
+
+
+def test_stale_prices_are_refused() -> None:
+    from agent_budget import Pricer
+
+    model = ScriptedChat(respond=lambda m: reply())
+    future = Budget(1.00, pricer=Pricer(today="2099-01-01"))
+    agent = create_agent(model, middleware=[SpendBudgetMiddleware(future)])
+    result = run(agent)
+    assert "last checked" in result[-1].content
+    assert future.spent_usd == 0
+    strict = create_agent(model, middleware=[SpendBudgetMiddleware(future, exit_behavior="error")])
+    with pytest.raises(StalePrice):
         run(strict)
 
 

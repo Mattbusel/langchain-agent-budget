@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.2.0 (2026-11-19)
+
+Fail closed, with llm-agent-budget 0.2. A model the budget cannot price is no longer let
+through uncounted by default: an uncounted call is how a cap stops meaning anything.
+
+### Changed (breaking)
+- `unpriced` defaults to `"refuse"`: a model llm-prices has no price for is not called, and
+  the run ends with the reason (`exit_behavior="end"`) or raises `UnpricedModelError`
+  (`"error"`). The old default, `"warn"`, is still available as the unsafe opt-out and now
+  issues an `UnsafeBudgetWarning` on every call it lets through, not once. `"ignore"` is
+  removed: an uncounted call must not be silent.
+- A price checked against the provider's page more than the budget's `max_price_age_days`
+  (90 by default) ago is refused like a spent budget (`StalePrice`), unless the budget's
+  `Pricer` allows stale prices. `CallEstimate.checked` carries the date.
+- Requires llm-agent-budget 0.2 (`>=0.2,<0.3`) and llm-prices 1.8.
+
+### Added
+- `StalePrice` and `UnsafeBudgetWarning` re-exported.
+
 ## 0.1.0 (2026-11-18)
 
 First release.

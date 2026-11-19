@@ -136,7 +136,7 @@ by default).
 | `subagent_usd` | `None` | A fixed slice per subagent run |
 | `subagent_fraction` | `None` | A slice of this fraction of what is left, per subagent run |
 | `provider` | `None` | Provider to price with when the model does not report one |
-| `unpriced` | `"warn"` | Model with no price: `"warn"` once and let it through uncounted, `"ignore"`, or `"error"` (raise `UnpricedModelError`) |
+| `unpriced` | `"refuse"` | Model with no price: `"refuse"` the call (the run ends, or `UnpricedModelError` with `exit_behavior="error"`), `"error"` (always raise), or `"warn"` (unsafe: let it through uncounted, with an `UnsafeBudgetWarning` on every call). Prices checked more than 90 days ago are refused the same way (`StalePrice`). |
 
 ## Compared with the built-in limits
 

@@ -10,7 +10,15 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 import llm_prices
-from agent_budget import Budget, BudgetError, BudgetExhausted, Reservation, current_budget
+from agent_budget import (
+    Budget,
+    BudgetError,
+    BudgetExhausted,
+    Reservation,
+    StalePrice,
+    UnsafeBudgetWarning,
+    current_budget,
+)
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     ExtendedModelResponse,
@@ -33,7 +41,8 @@ _MAX_OUTPUT_KEYS = ("max_tokens", "max_output_tokens", "max_completion_tokens", 
 class CallEstimate:
     """The most one model call can cost, worked out before the call is made.
 
-    `cost_usd` is `None` when llm-prices has no price for the model.
+    `cost_usd` is `None` when llm-prices has no price for the model. `checked` is the date
+    the price was last checked against the provider's page.
     `max_output_tokens` is `None` when nothing caps the reply (no `max_tokens` setting and no
     model profile); the estimate then covers the input only.
     """
@@ -43,6 +52,7 @@ class CallEstimate:
     input_tokens: int
     max_output_tokens: int | None
     cost_usd: float | None
+    checked: str | None = None
 
 
 def _positive_int(value: Any) -> int | None:
@@ -165,7 +175,7 @@ class SpendBudgetMiddleware(AgentMiddleware[Any, Any]):
         subagent_usd: float | None = None,
         subagent_fraction: float | None = None,
         provider: str | None = None,
-        unpriced: Literal["warn", "ignore", "error"] = "warn",
+        unpriced: Literal["refuse", "error", "warn"] = "refuse",
     ) -> None:
         """Set the budget.
 
@@ -191,8 +201,13 @@ class SpendBudgetMiddleware(AgentMiddleware[Any, Any]):
                 is left. Set at most one of `subagent_usd` and `subagent_fraction`.
             provider: Provider to price with when the chat model does not report one
                 (`ls_provider`). Any name llm-prices accepts.
-            unpriced: When llm-prices has no price for the model: `"warn"` once and let the
-                call through uncounted, `"ignore"`, or `"error"` (raise `UnpricedModelError`).
+            unpriced: When llm-prices has no price for the model. `"refuse"` (the default):
+                the call is not made, and the run ends as for a spent budget (`exit_behavior`
+                `"end"`) or raises `UnpricedModelError` (`"error"`). `"error"`: always raise.
+                `"warn"`: **unsafe**, let the call through uncounted, with an
+                `UnsafeBudgetWarning` on every such call. A price checked more than the
+                budget's `max_price_age_days` ago (90 by default) is refused the same way
+                (`StalePrice`), unless the budget's pricer allows stale prices.
         """
         super().__init__()
         if isinstance(budget, bool):
@@ -206,8 +221,11 @@ class SpendBudgetMiddleware(AgentMiddleware[Any, Any]):
         if exit_behavior not in {"end", "error"}:
             msg = f"Invalid exit_behavior: {exit_behavior!r}. Must be 'end' or 'error'"
             raise ValueError(msg)
-        if unpriced not in {"warn", "ignore", "error"}:
-            msg = f"Invalid unpriced: {unpriced!r}. Must be 'warn', 'ignore' or 'error'"
+        if unpriced not in {"refuse", "error", "warn"}:
+            msg = (
+                f"Invalid unpriced: {unpriced!r}. Must be 'refuse', 'error' or 'warn' "
+                "('ignore' was removed in 0.2: an uncounted call must not be silent)"
+            )
             raise ValueError(msg)
         if subagent_usd is not None and subagent_fraction is not None:
             msg = "Set at most one of subagent_usd and subagent_fraction"
@@ -252,6 +270,7 @@ class SpendBudgetMiddleware(AgentMiddleware[Any, Any]):
             input_tokens=input_tokens,
             max_output_tokens=max_out,
             cost_usd=cost,
+            checked=None if price is None else (price.checked or None),
         )
 
     # ── helpers ──────────────────────────────────────────────────────────
@@ -292,16 +311,25 @@ class SpendBudgetMiddleware(AgentMiddleware[Any, Any]):
         estimate = self.estimate(request)
         if estimate.cost_usd is None:
             label = f"{estimate.provider or 'unknown provider'}/{estimate.model or 'unknown model'}"
-            if self.unpriced == "error":
-                msg = f"No llm-prices price for {label}; cannot enforce the spend budget"
-                raise UnpricedModelError(msg)
             if self.unpriced == "warn":
-                self._warn_once(
-                    f"unpriced:{label}",
-                    f"SpendBudgetMiddleware: no llm-prices price for {label}; "
-                    "its calls are not counted against the budget",
+                warnings.warn(
+                    f"SpendBudgetMiddleware: no llm-prices price for {label}; this call is "
+                    "not counted against the budget (unpriced='warn')",
+                    UnsafeBudgetWarning,
+                    stacklevel=3,
                 )
-            return None, estimate
+                return None, estimate
+            msg = f"No llm-prices price for {label}; refusing to guess, so the call is not made"
+            if self.unpriced == "error" or self.exit_behavior == "error":
+                raise UnpricedModelError(msg)
+            return AIMessage(content=msg, additional_kwargs={"lc_source": "spend_budget"}), estimate
+        if estimate.checked:
+            try:
+                scope.pricer.check_fresh(estimate.model or "?", estimate.checked)
+            except StalePrice as error:
+                if self.exit_behavior == "error":
+                    raise
+                return self._refusal(error, estimate), estimate
         if estimate.max_output_tokens is None:
             self._warn_once(
                 f"unbounded:{estimate.model}",

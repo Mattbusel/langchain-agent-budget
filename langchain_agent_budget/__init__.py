@@ -15,12 +15,14 @@ from agent_budget import (
     BudgetExhausted,
     BudgetKilled,
     ScopeClosed,
+    StalePrice,
+    UnsafeBudgetWarning,
     current_budget,
 )
 
 from langchain_agent_budget.middleware import CallEstimate, SpendBudgetMiddleware
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "Budget",
@@ -30,6 +32,8 @@ __all__ = [
     "CallEstimate",
     "ScopeClosed",
     "SpendBudgetMiddleware",
+    "StalePrice",
+    "UnsafeBudgetWarning",
     "__version__",
     "current_budget",
 ]
